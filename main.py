@@ -7,6 +7,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import torch
 import os
+from transformers.trainer_utils import get_last_checkpoint
 
 
 # =====================================================
@@ -279,12 +280,13 @@ def set_qlora(MODEL_NAME):
 #   SFT TRAINER
 # =====================================================
 def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
-    # --- NEW: Check if the SFT model already exists ---
-    adapter_path = os.path.join(OUTPUT_DIR, "adapter_config.json")
-    if os.path.exists(adapter_path):
-        print(f"Existing SFT model found at {OUTPUT_DIR}. Skipping training...")
+    # Define a separate directory for checkpoints
+    CHECKPOINT_DIR = "data/model/checkpoints"
 
-        # Load the existing model and tokenizer
+    # 1. Check if the FINAL model already exists
+    final_adapter_path = os.path.join(OUTPUT_DIR, "adapter_config.json")
+    if os.path.exists(final_adapter_path):
+        print(f"Existing final SFT model found at {OUTPUT_DIR}. Skipping training...")
         bnb_config = set_bnb()
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_NAME,
@@ -296,22 +298,32 @@ def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
 
         model = PeftModel.from_pretrained(model, OUTPUT_DIR)
         tokenizer = AutoTokenizer.from_pretrained(OUTPUT_DIR, trust_remote_code=True)
-
         return model, tokenizer
-    # ---------------------------------------------------
 
+    # 2. Check for existing CHECKPOINTS to resume from
+    last_checkpoint = None
+    if os.path.isdir(CHECKPOINT_DIR):
+        last_checkpoint = get_last_checkpoint(CHECKPOINT_DIR)
+
+    if last_checkpoint is not None:
+        print(f"Checkpoint found at {last_checkpoint}. Resuming training...")
+    else:
+        print("No checkpoint found. Starting training from scratch...")
+
+    # 3. Setup Model and Trainer
     print("Setting up SFT Trainer...")
     model, tokenizer, peft_config = set_qlora(MODEL_NAME)
 
     training_args = SFTConfig(
-        output_dir=OUTPUT_DIR,
+        output_dir=CHECKPOINT_DIR,  # Save checkpoints in data/model/checkpoints
         num_train_epochs=2,
         per_device_train_batch_size=4,
         gradient_accumulation_steps=4,
         learning_rate=2e-4,
-        logging_steps=10,
+        logging_steps=20,
         save_strategy="epoch",
         eval_strategy="epoch",
+        save_total_limit=2,
         optim="paged_adamw_8bit",
         max_length=512,
         packing=False,
@@ -326,15 +338,17 @@ def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
         args=training_args,
     )
 
+    # 4. Start training (with resume capability)
     print("Starting training...")
-    trainer.train()
+    trainer.train(resume_from_checkpoint=last_checkpoint)
 
-    print("Saving model...")
+    # 5. Save the final model to the main OUTPUT_DIR
+    print(f"Saving final model to {OUTPUT_DIR}...")
     trainer.save_model(OUTPUT_DIR)
     tokenizer.save_pretrained(OUTPUT_DIR)
-    print("Training finished and model saved!")
+    print("Training finished and final model saved!")
 
-    return trainer.model, tokenizer  # Return them just in case
+    return trainer.model, tokenizer
 
 
 if __name__ == "__main__":
