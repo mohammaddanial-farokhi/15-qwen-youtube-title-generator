@@ -279,6 +279,41 @@ def set_qlora(MODEL_NAME):
 # =====================================================
 #   SFT TRAINER
 # =====================================================
+def inspect_formatted_sample(dataset, tokenizer, index=0):
+    """Inspects exactly what the model sees during SFT training."""
+    print("\n" + "=" * 70)
+    print(f"🔍 INSPECTING DATASET SAMPLE AT INDEX {index}")
+    print("=" * 70)
+
+    example = dataset[index]
+    messages = example["messages"]
+
+    print("\n[1] RAW MESSAGES (List of dicts):")
+    for msg in messages:
+        print(f"    Role: {msg['role']}")
+        print(
+            f"    Content: {msg['content'][:150]}..."
+            if len(msg["content"]) > 150
+            else f"    Content: {msg['content']}"
+        )
+
+    # 2. Apply Chat Template (What the text looks like before tokenization)
+    formatted_text = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=False
+    )
+    print("\n[2] FORMATTED TEXT (What the model actually reads as a string):")
+    print(f"    {repr(formatted_text)}")
+
+    # 3. Tokenize (What the model actually processes)
+    tokenized = tokenizer(
+        formatted_text,
+        padding="max_length",
+        max_length=128,  # Using a small length just to show padding clearly
+        truncation=True,
+        return_tensors="pt",
+    )
+
+
 def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
     # Define a separate directory for checkpoints
     CHECKPOINT_DIR = "data/model/checkpoints"
@@ -325,17 +360,28 @@ def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
         eval_strategy="epoch",
         save_total_limit=2,
         optim="paged_adamw_8bit",
-        max_length=512,
         packing=False,
+        max_seq_length=512,
     )
+
+    # Define a formatting function to apply Qwen chat template to the messages
+    def formatting_prompts_func(example):
+        output_texts = []
+        for i in range(len(example["messages"])):
+            text = tokenizer.apply_chat_template(
+                example["messages"][i], tokenize=False, add_generation_prompt=False
+            )
+            output_texts.append(text)
+        return output_texts
 
     trainer = SFTTrainer(
         model=model,
         train_dataset=train_dataset,
         eval_dataset=valid_dataset,
         peft_config=peft_config,
-        processing_class=tokenizer,
+        tokenizer=tokenizer,
         args=training_args,
+        formatting_func=formatting_prompts_func,
     )
 
     # 4. Start training (with resume capability)
@@ -362,7 +408,8 @@ if __name__ == "__main__":
 
     train_dataset, valid_dataset = sft_train_valid(raw_data)
 
-    # base_model, base_tokenizer = load_model_and_tokenizer(MODEL_NAME)
+    # inspect_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+    # inspect_formatted_sample(train_dataset, inspect_tokenizer)
 
     trained_model, trained_tokenizer = sft_trainer(
         MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR
