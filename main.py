@@ -225,15 +225,105 @@ def qwen_chat_format(user_input, system_message="You are a helpful assistant."):
     return prompt
 
 
+# =====================================================
+#   QLoRA CONFIG
+# ====================================================
+def set_bnb():
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    )
+
+    return bnb_config
+
+
+def set_qlora(MODEL_NAME):
+    bnb_config = set_bnb()
+
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        quantization_config=bnb_config,
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    model = prepare_model_for_kbit_training(model)
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+
+    peft_config = LoraConfig(
+        r=16,
+        lora_alpha=32,
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+    )
+
+    return model, tokenizer, peft_config
+
+
+# =====================================================
+#   SFT TRAINER
+# =====================================================
+def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
+    print("Setting up SFT Trainer...")
+    model, tokenizer, peft_config = set_qlora(MODEL_NAME)
+
+    training_args = SFTConfig(
+        output_dir=OUTPUT_DIR,
+        num_train_epochs=2,  # Start with 2 epochs to avoid overfitting
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=4,
+        learning_rate=2e-4,
+        logging_steps=10,
+        save_strategy="epoch",
+        eval_strategy="epoch",  # Evaluate at the end of each epoch
+        optim="paged_adamw_8bit",
+        max_length=512,  # Max sequence length
+        packing=False,  # Do not pack multiple samples into one
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        train_dataset=train_dataset,
+        eval_dataset=valid_dataset,
+        peft_config=peft_config,
+        processing_class=tokenizer,
+        args=training_args,
+    )
+
+    print("Starting training...")
+    trainer.train()
+
+    print("Saving model...")
+    trainer.save_model(OUTPUT_DIR)
+    tokenizer.save_pretrained(OUTPUT_DIR)
+    print("Training finished and model saved!")
+
+
 if __name__ == "__main__":
     # ==================== CONFIG ====================
     DATASET_NAME = "shawhin/youtube-titles-dpo"
     MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
-    OUTPUT_DIR = "data/model/finall-qwen-sft-youtube-titles"
+    OUTPUT_DIR = "data/model/final-qwen-sft-youtube-titles"
 
     raw_data = loading_dataset(DATASET_NAME)
     # dataset_first_look(raw_data)
 
     train_dataset, valid_dataset = sft_train_valid(raw_data)
 
-    base_model, base_tokenizer = load_model_and_tokenizer(MODEL_NAME)
+    # base_model, base_tokenizer = load_model_and_tokenizer(MODEL_NAME)
+
+    sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR)
