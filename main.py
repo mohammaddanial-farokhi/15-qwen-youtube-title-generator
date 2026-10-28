@@ -2,8 +2,9 @@ from datasets import Dataset, load_dataset, DatasetDict
 import pandas as pd
 import numpy as np
 from collections import Counter
-from trl import DPOConfig, DPOTrainer
-from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from trl import SFTTrainer, SFTConfig, DPOConfig, DPOTrainer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, pipeline
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import torch
 
 
@@ -177,7 +178,29 @@ def dataset_first_look(dataset, sample_size: int = 2, text_columns=None):
 
 
 # =====================================================
-# MODEL LOADING & QLORA SETUP
+# 2. DATA PreProcess
+# =====================================================
+def prepare_sft_dataset(example):
+    # For SFT, we only need the prompt and the chosen (winning) response.
+    # The dataset already provides them as a list of dictionaries (chat format).
+    # We concatenate them to create a full conversation.
+    messages = example["prompt"] + example["chosen"]
+    return {"messages": messages}
+
+
+def sft_train_valid(dataset):
+    train_dataset = dataset["train"].map(
+        prepare_sft_dataset, remove_columns=dataset["train"].column_names
+    )
+    valid_dataset = dataset["valid"].map(
+        prepare_sft_dataset, remove_columns=dataset["valid"].column_names
+    )
+
+    return train_dataset, valid_dataset
+
+
+# =====================================================
+# MODEL LOADING
 # =====================================================
 def load_model_and_tokenizer(model_name):
     """Load a standard (non-quantized) model and tokenizer."""
@@ -190,14 +213,27 @@ def load_model_and_tokenizer(model_name):
     return model, tokenizer
 
 
+# =====================================================
+# SFT
+# =====================================================
+def qwen_chat_format(user_input, system_message="You are a helpful assistant."):
+    prompt = (
+        f"<|im_start|>system\n{system_message}<|im_end|>\n"
+        f"<|im_start|>user\n{user_input}<|im_end|>\n"
+        f"<|im_start|>assistant\n"
+    )
+    return prompt
+
+
 if __name__ == "__main__":
     # ==================== CONFIG ====================
     DATASET_NAME = "shawhin/youtube-titles-dpo"
     MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
+    OUTPUT_DIR = "data/model/finall-qwen-sft-youtube-titles"
 
-    # ==================== STEP 1: Load Dataset ====================
     raw_data = loading_dataset(DATASET_NAME)
     # dataset_first_look(raw_data)
 
-    # ==================== STEP ====================
+    train_dataset, valid_dataset = sft_train_valid(raw_data)
+
     base_model, base_tokenizer = load_model_and_tokenizer(MODEL_NAME)
