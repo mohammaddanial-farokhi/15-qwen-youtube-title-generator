@@ -6,6 +6,7 @@ from trl import SFTTrainer, SFTConfig, DPOConfig, DPOTrainer
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, pipeline
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import torch
+import os
 
 
 # =====================================================
@@ -278,21 +279,42 @@ def set_qlora(MODEL_NAME):
 #   SFT TRAINER
 # =====================================================
 def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
+    # --- NEW: Check if the SFT model already exists ---
+    adapter_path = os.path.join(OUTPUT_DIR, "adapter_config.json")
+    if os.path.exists(adapter_path):
+        print(f"Existing SFT model found at {OUTPUT_DIR}. Skipping training...")
+
+        # Load the existing model and tokenizer
+        bnb_config = set_bnb()
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            quantization_config=bnb_config,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(model, OUTPUT_DIR)
+        tokenizer = AutoTokenizer.from_pretrained(OUTPUT_DIR, trust_remote_code=True)
+
+        return model, tokenizer
+    # ---------------------------------------------------
+
     print("Setting up SFT Trainer...")
     model, tokenizer, peft_config = set_qlora(MODEL_NAME)
 
     training_args = SFTConfig(
         output_dir=OUTPUT_DIR,
-        num_train_epochs=2,  # Start with 2 epochs to avoid overfitting
+        num_train_epochs=2,
         per_device_train_batch_size=4,
         gradient_accumulation_steps=4,
         learning_rate=2e-4,
         logging_steps=10,
         save_strategy="epoch",
-        eval_strategy="epoch",  # Evaluate at the end of each epoch
+        eval_strategy="epoch",
         optim="paged_adamw_8bit",
-        max_length=512,  # Max sequence length
-        packing=False,  # Do not pack multiple samples into one
+        max_length=512,
+        packing=False,
     )
 
     trainer = SFTTrainer(
@@ -312,6 +334,8 @@ def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
     tokenizer.save_pretrained(OUTPUT_DIR)
     print("Training finished and model saved!")
 
+    return trainer.model, tokenizer  # Return them just in case
+
 
 if __name__ == "__main__":
     # ==================== CONFIG ====================
@@ -326,4 +350,6 @@ if __name__ == "__main__":
 
     # base_model, base_tokenizer = load_model_and_tokenizer(MODEL_NAME)
 
-    sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR)
+    trained_model, trained_tokenizer = sft_trainer(
+        MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR
+    )
