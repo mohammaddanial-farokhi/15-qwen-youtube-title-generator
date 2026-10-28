@@ -1,7 +1,10 @@
-from datasets import Dataset, load_dataset
+from datasets import Dataset, load_dataset, DatasetDict
 import pandas as pd
 import numpy as np
 from collections import Counter
+from trl import DPOConfig, DPOTrainer
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+import torch
 
 
 # =====================================================
@@ -173,10 +176,28 @@ def dataset_first_look(dataset, sample_size: int = 2, text_columns=None):
     print(f"\n{line}\nAnalysis finished.\n{line}")
 
 
+# =====================================================
+# MODEL LOADING & QLORA SETUP
+# =====================================================
+def load_model_and_tokenizer(model_name):
+    """Load a standard (non-quantized) model and tokenizer."""
+    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    return model, tokenizer
+
+
 if __name__ == "__main__":
     # ==================== CONFIG ====================
     DATASET_NAME = "shawhin/youtube-titles-dpo"
+    MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
 
     # ==================== STEP 1: Load Dataset ====================
     raw_data = loading_dataset(DATASET_NAME)
-    dataset_first_look(raw_data)
+    # dataset_first_look(raw_data)
+
+    # ==================== STEP ====================
+    base_model, base_tokenizer = load_model_and_tokenizer(MODEL_NAME)
