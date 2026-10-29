@@ -12,6 +12,7 @@ from tqdm import tqdm
 from evaluate import load
 import nltk
 from nltk.translate.meteor_score import meteor_score
+import json
 
 
 # =====================================================
@@ -448,6 +449,26 @@ def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
 # 6. EVALUATION
 # =====================================================
 def make_predictions(model, tokenizer, raw_dataset):
+    # Define the save directory and file path
+    eval_dir = "data/evaluation"
+    file_path = os.path.join(eval_dir, "predictions_cache.json")
+
+    # Check if the cached file already exists
+    if os.path.exists(file_path):
+        print(f"Cached predictions found at {file_path}. Loading from file...")
+        with open(file_path, "r", encoding="utf-8") as f:
+            cached_data = json.load(f)
+
+        predictions = cached_data["predictions"]
+        references = cached_data["references"]
+
+        print(f"Loaded {len(predictions)} cached titles.")
+        return predictions, references
+
+    # If file does not exist, start generating
+    print("No cache found. Starting generation from scratch...")
+    os.makedirs(eval_dir, exist_ok=True)  # Create directory if it doesn't exist
+
     model.eval()
     predictions = []
     references = []
@@ -482,6 +503,17 @@ def make_predictions(model, tokenizer, raw_dataset):
 
     print(f"Generated {len(predictions)} titles.")
 
+    # Save the generated results to the JSON file
+    print(f"Saving generated titles to {file_path}...")
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {"predictions": predictions, "references": references},
+            f,
+            indent=4,
+            ensure_ascii=False,
+        )
+    print("Saved successfully!")
+
     return predictions, references
 
 
@@ -503,6 +535,7 @@ def calculate_meteor(predictions, references):
     nltk.download("wordnet")
     nltk.download("punkt")
     nltk.download("omw-1.4")
+    nltk.download("punkt_tab")
 
     meteor_scores = []
     for pred, ref in zip(predictions, references):
