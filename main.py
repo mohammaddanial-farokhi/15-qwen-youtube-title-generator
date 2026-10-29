@@ -180,8 +180,8 @@ def dataset_first_look(dataset, sample_size: int = 2, text_columns=None):
 
 
 # =====================================================
-# 2. DATA PreProcess
-# =====================================================
+# 2. DATA PREPROCESSING
+# ======================================================
 def prepare_sft_dataset(example):
     # For SFT, we only need the prompt and the chosen (winning) response.
     # The dataset already provides them as a list of dictionaries (chat format).
@@ -202,7 +202,7 @@ def sft_train_valid(dataset):
 
 
 # =====================================================
-# MODEL LOADING
+# 3. MODEL & TOKENIZER LOADING
 # =====================================================
 def load_model_and_tokenizer(model_name):
     """Load a standard (non-quantized) model and tokenizer."""
@@ -216,7 +216,7 @@ def load_model_and_tokenizer(model_name):
 
 
 # =====================================================
-# SFT
+# 4. UTILITIES & INSPECTION
 # =====================================================
 def qwen_chat_format(user_input, system_message="You are a helpful assistant."):
     prompt = (
@@ -227,9 +227,87 @@ def qwen_chat_format(user_input, system_message="You are a helpful assistant."):
     return prompt
 
 
+def inspect_formatted_sample(dataset, tokenizer, index=0):
+    """Inspects exactly what the model sees during SFT training."""
+    print("\n" + "=" * 70)
+    print(f"INSPECTING DATASET SAMPLE AT INDEX {index}")
+    print("=" * 70)
+
+    example = dataset[index]
+    messages = example["messages"]
+
+    print("\n[1] RAW MESSAGES (List of dicts):")
+    for msg in messages:
+        print(f"    Role: {msg['role']}")
+        print(
+            f"    Content: {msg['content'][:150]}..."
+            if len(msg["content"]) > 150
+            else f"    Content: {msg['content']}"
+        )
+
+    # 2. Apply Chat Template (What the text looks like before tokenization)
+    formatted_text = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=False
+    )
+    print("\n[2] FORMATTED TEXT (What the model actually reads as a string):")
+    print(f"    {repr(formatted_text)}")
+
+    # 3. Tokenize (What the model actually processes)
+    tokenized = tokenizer(
+        formatted_text,
+        padding="max_length",
+        max_length=128,  # Using a small length just to show padding clearly
+        truncation=True,
+        return_tensors="pt",
+    )
+
+
+def signle_prompt_test(
+    trained_model,
+    trained_tokenizer,
+    test_prompt="This video is about how to focus hard without any distractions.",
+):
+    # 1. Format prompt exactly as it was during training (with Qwen chat template)
+    messages = [
+        {
+            "role": "user",
+            "content": f"Given the YouTube video idea write an engaging title.\n\n**Video Idea**: {test_prompt}",
+        }
+    ]
+    formatted_prompt = trained_tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+
+    # 2. Tokenize and convert to PyTorch Tensors, then move to GPU
+    inputs = trained_tokenizer(formatted_prompt, return_tensors="pt").to("cuda")
+
+    # 3. Generate text (not just a forward pass)
+    with torch.no_grad():
+        outputs = trained_model.generate(
+            **inputs,
+            max_new_tokens=50,
+            do_sample=True,
+            temperature=0.7,
+            pad_token_id=trained_tokenizer.eos_token_id,
+        )
+
+    # 4. Extract only the newly generated tokens (ignore the prompt part)
+    input_length = inputs.input_ids.shape[1]
+    generated_tokens = outputs[0][input_length:]
+
+    # 5. Decode back to text
+    result_test = trained_tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+    print("\n--- Generated Title ---")
+    print(f"user prompt:\n{test_prompt}")
+    print("\nmodel result: ")
+    print(result_test)
+    print("-----------------------")
+
+
 # =====================================================
-#   QLoRA CONFIG
-# ====================================================
+# 5. QLORA CONFIGURATION
+# =====================================================
 def set_bnb():
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -277,43 +355,8 @@ def set_qlora(MODEL_NAME):
 
 
 # =====================================================
-#   SFT TRAINER
+# 6. SFT TRAINER
 # =====================================================
-def inspect_formatted_sample(dataset, tokenizer, index=0):
-    """Inspects exactly what the model sees during SFT training."""
-    print("\n" + "=" * 70)
-    print(f"🔍 INSPECTING DATASET SAMPLE AT INDEX {index}")
-    print("=" * 70)
-
-    example = dataset[index]
-    messages = example["messages"]
-
-    print("\n[1] RAW MESSAGES (List of dicts):")
-    for msg in messages:
-        print(f"    Role: {msg['role']}")
-        print(
-            f"    Content: {msg['content'][:150]}..."
-            if len(msg["content"]) > 150
-            else f"    Content: {msg['content']}"
-        )
-
-    # 2. Apply Chat Template (What the text looks like before tokenization)
-    formatted_text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=False
-    )
-    print("\n[2] FORMATTED TEXT (What the model actually reads as a string):")
-    print(f"    {repr(formatted_text)}")
-
-    # 3. Tokenize (What the model actually processes)
-    tokenized = tokenizer(
-        formatted_text,
-        padding="max_length",
-        max_length=128,  # Using a small length just to show padding clearly
-        truncation=True,
-        return_tensors="pt",
-    )
-
-
 def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
     # Define a separate directory for checkpoints
     CHECKPOINT_DIR = "data/model/checkpoints"
@@ -398,19 +441,32 @@ def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
 
 
 if __name__ == "__main__":
-    # ==================== CONFIG ====================
+    # ==================== STEP 1: CONFIGURATION ====================
     DATASET_NAME = "shawhin/youtube-titles-dpo"
     MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
     OUTPUT_DIR = "data/model/final-qwen-sft-youtube-titles"
 
+    # ==================== STEP 2: LOAD RAW DATA ====================
     raw_data = loading_dataset(DATASET_NAME)
+
+    # Optional: Inspect dataset structure
     # dataset_first_look(raw_data)
 
+    # ==================== STEP 3: PREPARE DATA ====================
     train_dataset, valid_dataset = sft_train_valid(raw_data)
 
+    # ==================== STEP 4: (OPTIONAL) INSPECT FORMATTED DATA ====================
     # inspect_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
     # inspect_formatted_sample(train_dataset, inspect_tokenizer)
 
+    # ==================== STEP 5: START TRAINING (OR LOAD IF EXISTS) ====================
     trained_model, trained_tokenizer = sft_trainer(
         MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR
+    )
+
+    # ==================== STEP 6: TEST TRAINED MODEL ====================
+    signle_prompt_test(
+        trained_model,
+        trained_tokenizer,
+        test_prompt="battery- phone - apple - protect",
     )
