@@ -8,6 +8,10 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 import torch
 import os
 from transformers.trainer_utils import get_last_checkpoint
+from tqdm import tqdm
+from evaluate import load
+import nltk
+from nltk.translate.meteor_score import meteor_score
 
 
 # =====================================================
@@ -440,6 +444,80 @@ def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
     return trainer.model, tokenizer
 
 
+# =====================================================
+# 6. EVALUATION
+# =====================================================
+def make_predictions(model, tokenizer, raw_dataset):
+    model.eval()
+    predictions = []
+    references = []
+
+    valid_dataset = raw_dataset["valid"]
+
+    for example in tqdm(valid_dataset, desc="Generating titles"):
+        messages = example["prompt"]
+        # Format the prompt with Qwen chat template
+        formatted_prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = tokenizer(formatted_prompt, return_tensors="pt").to("cuda")
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=30,
+                do_sample=False,  # Use greedy decoding for deterministic evaluation
+                pad_token_id=tokenizer.eos_token_id,
+            )
+
+        # Extract generated title
+        generated_tokens = outputs[0][inputs.input_ids.shape[1] :]
+        generated_title = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
+
+        # Extract reference title (the "chosen" response)
+        reference_title = example["chosen"][0]["content"].strip()
+
+        predictions.append(generated_title)
+        references.append(reference_title)
+
+    print(f"Generated {len(predictions)} titles.")
+
+    return predictions, references
+
+
+def bert_score(predictions, references):
+    bertscore = load("bertscore")
+    results = bertscore.compute(
+        predictions=predictions,
+        references=references,
+        lang="en",
+        model_type="distilbert-base-uncased",
+    )
+
+    print(f"BERTScore Precision: {sum(results['precision']) / len(results['precision']):.4f}")
+    print(f"BERTScore Recall:    {sum(results['recall']) / len(results['recall']):.4f}")
+    print(f"BERTScore F1:        {sum(results['f1']) / len(results['f1']):.4f}")
+
+
+def calculate_meteor(predictions, references):
+    nltk.download("wordnet")
+    nltk.download("punkt")
+    nltk.download("omw-1.4")
+
+    meteor_scores = []
+    for pred, ref in zip(predictions, references):
+        # Tokenize both texts
+        pred_tokens = nltk.word_tokenize(pred)
+        ref_tokens = nltk.word_tokenize(ref)
+
+        # Calculate METEOR (requires a list of references)
+        score = meteor_score([ref_tokens], pred_tokens)
+        meteor_scores.append(score)
+
+    mean_meteor = sum(meteor_scores) / len(meteor_scores)
+    print(f"Mean METEOR score: {mean_meteor:.4f}")
+
+
 if __name__ == "__main__":
     # ==================== STEP 1: CONFIGURATION ====================
     DATASET_NAME = "shawhin/youtube-titles-dpo"
@@ -465,8 +543,13 @@ if __name__ == "__main__":
     )
 
     # ==================== STEP 6: TEST TRAINED MODEL ====================
-    signle_prompt_test(
-        trained_model,
-        trained_tokenizer,
-        test_prompt="battery- phone - apple - protect",
-    )
+    # signle_prompt_test(
+    #     trained_model,
+    #     trained_tokenizer,
+    #     test_prompt="battery- phone - apple - protect",
+    # )
+
+    # ==================== STEP 7: EVALUATION ====================
+    predictions, references = make_predictions(trained_model, trained_tokenizer, raw_data)
+    bert_score(predictions, references)
+    calculate_meteor(predictions, references)
