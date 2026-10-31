@@ -188,9 +188,9 @@ def dataset_first_look(dataset, sample_size: int = 2, text_columns=None):
 # 2. DATA PREPROCESSING
 # ======================================================
 def prepare_sft_dataset(example):
-    # For SFT, we only need the prompt and the chosen (winning) response.
-    # The dataset already provides them as a list of dictionaries (chat format).
-    # We concatenate them to create a full conversation.
+    """For SFT, we only need the prompt and the chosen (winning) response.
+    The dataset already provides them as a list of dictionaries (chat format).
+    We concatenate them to create a full conversation."""
     messages = example["prompt"] + example["chosen"]
     return {"messages": messages}
 
@@ -207,31 +207,8 @@ def sft_train_valid(dataset):
 
 
 # =====================================================
-# 3. MODEL & TOKENIZER LOADING
+# 3. UTILITIES & INSPECTION
 # =====================================================
-def load_model_and_tokenizer(model_name):
-    """Load a standard (non-quantized) model and tokenizer."""
-    model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    return model, tokenizer
-
-
-# =====================================================
-# 4. UTILITIES & INSPECTION
-# =====================================================
-def qwen_chat_format(user_input, system_message="You are a helpful assistant."):
-    prompt = (
-        f"<|im_start|>system\n{system_message}<|im_end|>\n"
-        f"<|im_start|>user\n{user_input}<|im_end|>\n"
-        f"<|im_start|>assistant\n"
-    )
-    return prompt
-
-
 def inspect_formatted_sample(dataset, tokenizer, index=0):
     """Inspects exactly what the model sees during SFT training."""
     print("\n" + "=" * 70)
@@ -311,7 +288,7 @@ def signle_prompt_test(
 
 
 # =====================================================
-# 5. QLORA CONFIGURATION
+# 4. QLORA CONFIGURATION
 # =====================================================
 def set_bnb():
     bnb_config = BitsAndBytesConfig(
@@ -360,7 +337,7 @@ def set_qlora(MODEL_NAME):
 
 
 # =====================================================
-# 6. SFT TRAINER
+# 5. SFT TRAINER
 # =====================================================
 def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
     # Define a separate directory for checkpoints
@@ -451,7 +428,7 @@ def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
 def make_predictions(model, tokenizer, raw_dataset, cache_filename="predictions_cache.json"):
     # Define the save directory and file path
     eval_dir = "data/evaluation"
-    file_path = os.path.join(eval_dir, cache_filename)  # <-- اسم فایل بر اساس ورودی تعیین میشه
+    file_path = os.path.join(eval_dir, cache_filename)
 
     # Check if the cached file already exists
     if os.path.exists(file_path):
@@ -647,7 +624,6 @@ if __name__ == "__main__":
     # ==================== STEP 2: LOAD RAW DATA ====================
     raw_data = loading_dataset(DATASET_NAME)
 
-    # Optional: Inspect dataset structure
     # dataset_first_look(raw_data)
 
     # ==================== STEP 3: PREPARE DATA ====================

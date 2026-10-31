@@ -5,8 +5,8 @@ from peft import PeftModel
 
 # ==================== CONFIG ====================
 BASE_MODEL = "Qwen/Qwen2.5-3B-Instruct"
-SFT_ADAPTER_PATH = "data/model/final-qwen-sft-youtube-titles"
-DPO_ADAPTER_PATH = "data/model/final-DPO"
+SFT_ADAPTER_PATH = "mdanialFarokhi/qwen-sft-youtube-titles"
+DPO_ADAPTER_PATH = "mdanialFarokhi/qwen-dpo-youtube-titles"
 
 # ==================== LOAD MODELS (4-BIT) ====================
 print("Loading tokenizer...")
