@@ -1,0 +1,14 @@
+# Ignore heavy model weights and checkpoints
+data/model/
+
+# Ignore Hugging Face cache and erroneous home folder
+home/
+.cache/
+
+# Ignore python cache and virtual environments
+__pycache__/
+*.pyc
+venv/
+.venv/
+.env
+results.txt
