@@ -551,11 +551,101 @@ def calculate_meteor(predictions, references):
     print(f"Mean METEOR score: {mean_meteor:.4f}")
 
 
+# =====================================================
+# 7. DPO
+# =====================================================
+def prepare_dpo_dataset(example):
+    """Extracts plain text strings from the conversational format for DPO."""
+    return {
+        "prompt": example["prompt"][0]["content"],
+        "chosen": example["chosen"][0]["content"],
+        "rejected": example["rejected"][0]["content"],
+    }
+
+
+def dpo_trainer(DPO_OUT_DIR, model, tokenizer, raw_dataset):
+    # Define a separate directory for DPO checkpoints
+    DPO_CHECKPOINT_DIR = "data/model/dpo-checkpoints"
+
+    dpo_train_dataset = raw_data["train"].map(prepare_dpo_dataset)
+    dpo_valid_dataset = raw_data["valid"].map(prepare_dpo_dataset)
+
+    # 1. Check if the FINAL DPO model already exists
+    dpo_adapter_path = os.path.join(DPO_OUT_DIR, "adapter_config.json")
+    if os.path.exists(dpo_adapter_path):
+        print(f"Existing DPO model found at {DPO_OUT_DIR}. Skipping training...")
+        from peft import PeftModel
+
+        # The 'model' passed to this function is the SFT model (a PeftModel).
+        # We stack the DPO adapter on top of it.
+        dpo_model = PeftModel.from_pretrained(model, DPO_OUT_DIR)
+        return dpo_model, tokenizer
+
+    # 2. Check for existing CHECKPOINTS to resume from
+    last_checkpoint = None
+    if os.path.isdir(DPO_CHECKPOINT_DIR):
+        last_checkpoint = get_last_checkpoint(DPO_CHECKPOINT_DIR)
+
+    if last_checkpoint is not None:
+        print(f"Checkpoint found at {last_checkpoint}. Resuming DPO training...")
+    else:
+        print("No DPO checkpoint found. Starting DPO training from scratch...")
+
+    # 3. Setup DPO Trainer
+    training_args = DPOConfig(
+        output_dir=DPO_CHECKPOINT_DIR,
+        beta=0.1,
+        learning_rate=7e-7,
+        num_train_epochs=1,
+        loss_type="sigmoid",
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        per_device_eval_batch_size=2,
+        bf16=True,
+        save_strategy="epoch",
+        eval_strategy="epoch",
+        save_total_limit=2,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        logging_steps=25,
+        report_to="none",
+        max_length=512,
+        max_prompt_length=384,
+    )
+
+    print("Enabling input gradients for DPO training...")
+    model.enable_input_require_grads()
+
+    trainer = DPOTrainer(
+        model=model,
+        ref_model=None,
+        args=training_args,
+        tokenizer=tokenizer,
+        train_dataset=dpo_train_dataset,
+        eval_dataset=dpo_valid_dataset,
+    )
+
+    # 4. Start training (with resume capability)
+    print("Starting DPO training...")
+    trainer.train(resume_from_checkpoint=last_checkpoint)
+    print("DPO training finished!")
+
+    # 5. Save the final DPO model
+    print(f"Saving final DPO model to {DPO_OUT_DIR}...")
+    trainer.save_model(DPO_OUT_DIR)
+    tokenizer.save_pretrained(DPO_OUT_DIR)
+    print("DPO model saved successfully!")
+
+    # Return the trained model and tokenizer for immediate use
+    return trainer.model, tokenizer
+
+
 if __name__ == "__main__":
     # ==================== STEP 1: CONFIGURATION ====================
     DATASET_NAME = "shawhin/youtube-titles-dpo"
     MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
     OUTPUT_DIR = "data/model/final-qwen-sft-youtube-titles"
+    DPO_OUT_DIR = "data/model/final-DPO"
 
     # ==================== STEP 2: LOAD RAW DATA ====================
     raw_data = loading_dataset(DATASET_NAME)
@@ -583,6 +673,13 @@ if __name__ == "__main__":
     # )
 
     # ==================== STEP 7: EVALUATION ====================
-    predictions, references = make_predictions(trained_model, trained_tokenizer, raw_data)
-    bert_score(predictions, references)
-    calculate_meteor(predictions, references)
+    # predictions, references = make_predictions(trained_model, trained_tokenizer, raw_data)
+    # bert_score(predictions, references)
+    # calculate_meteor(predictions, references)
+
+    # ==================== STEP 8: DPO ====================
+    dpo_model, dpo_tokenizer = dpo_trainer(
+        DPO_OUT_DIR, trained_model, trained_tokenizer, raw_data
+    )
+
+    # ==================== STEP 9: TEST DPO MODEL ====================
