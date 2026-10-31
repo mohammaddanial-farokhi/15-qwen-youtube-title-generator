@@ -379,7 +379,7 @@ def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
         )
         from peft import PeftModel
 
-        model = PeftModel.from_pretrained(model, OUTPUT_DIR)
+        model = PeftModel.from_pretrained(model, OUTPUT_DIR, is_trainable=True)
         tokenizer = AutoTokenizer.from_pretrained(OUTPUT_DIR, trust_remote_code=True)
         return model, tokenizer
 
@@ -448,10 +448,10 @@ def sft_trainer(MODEL_NAME, train_dataset, valid_dataset, OUTPUT_DIR):
 # =====================================================
 # 6. EVALUATION
 # =====================================================
-def make_predictions(model, tokenizer, raw_dataset):
+def make_predictions(model, tokenizer, raw_dataset, cache_filename="predictions_cache.json"):
     # Define the save directory and file path
     eval_dir = "data/evaluation"
-    file_path = os.path.join(eval_dir, "predictions_cache.json")
+    file_path = os.path.join(eval_dir, cache_filename)  # <-- اسم فایل بر اساس ورودی تعیین میشه
 
     # Check if the cached file already exists
     if os.path.exists(file_path):
@@ -467,7 +467,7 @@ def make_predictions(model, tokenizer, raw_dataset):
 
     # If file does not exist, start generating
     print("No cache found. Starting generation from scratch...")
-    os.makedirs(eval_dir, exist_ok=True)  # Create directory if it doesn't exist
+    os.makedirs(eval_dir, exist_ok=True)
 
     model.eval()
     predictions = []
@@ -487,15 +487,12 @@ def make_predictions(model, tokenizer, raw_dataset):
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=30,
-                do_sample=False,  # Use greedy decoding for deterministic evaluation
+                do_sample=False,
                 pad_token_id=tokenizer.eos_token_id,
             )
 
-        # Extract generated title
         generated_tokens = outputs[0][inputs.input_ids.shape[1] :]
         generated_title = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
-
-        # Extract reference title (the "chosen" response)
         reference_title = example["chosen"][0]["content"].strip()
 
         predictions.append(generated_title)
@@ -503,7 +500,6 @@ def make_predictions(model, tokenizer, raw_dataset):
 
     print(f"Generated {len(predictions)} titles.")
 
-    # Save the generated results to the JSON file
     print(f"Saving generated titles to {file_path}...")
     with open(file_path, "w", encoding="utf-8") as f:
         json.dump(
@@ -567,19 +563,18 @@ def dpo_trainer(DPO_OUT_DIR, model, tokenizer, raw_dataset):
     # Define a separate directory for DPO checkpoints
     DPO_CHECKPOINT_DIR = "data/model/dpo-checkpoints"
 
-    dpo_train_dataset = raw_data["train"].map(prepare_dpo_dataset)
-    dpo_valid_dataset = raw_data["valid"].map(prepare_dpo_dataset)
+    dpo_train_dataset = raw_dataset["train"].map(prepare_dpo_dataset)
+    dpo_valid_dataset = raw_dataset["valid"].map(prepare_dpo_dataset)
 
     # 1. Check if the FINAL DPO model already exists
     dpo_adapter_path = os.path.join(DPO_OUT_DIR, "adapter_config.json")
     if os.path.exists(dpo_adapter_path):
-        print(f"Existing DPO model found at {DPO_OUT_DIR}. Skipping training...")
-        from peft import PeftModel
-
-        # The 'model' passed to this function is the SFT model (a PeftModel).
-        # We stack the DPO adapter on top of it.
-        dpo_model = PeftModel.from_pretrained(model, DPO_OUT_DIR)
-        return dpo_model, tokenizer
+        print(f"Existing DPO model found at {DPO_OUT_DIR}. Loading DPO adapter...")
+        # Load the DPO adapter on top of the SFT adapter
+        model.load_adapter(DPO_OUT_DIR, adapter_name="dpo")
+        # Activate the DPO adapter so the model uses it for generation
+        model.set_adapter("dpo")
+        return model, tokenizer
 
     # 2. Check for existing CHECKPOINTS to resume from
     last_checkpoint = None
@@ -595,15 +590,17 @@ def dpo_trainer(DPO_OUT_DIR, model, tokenizer, raw_dataset):
     training_args = DPOConfig(
         output_dir=DPO_CHECKPOINT_DIR,
         beta=0.1,
-        learning_rate=7e-7,
-        num_train_epochs=1,
+        learning_rate=2e-6,
+        num_train_epochs=2,
         loss_type="sigmoid",
         per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
         per_device_eval_batch_size=2,
         bf16=True,
-        save_strategy="epoch",
-        eval_strategy="epoch",
+        save_strategy="steps",
+        save_steps=40,
+        eval_strategy="steps",
+        eval_steps=40,
         save_total_limit=2,
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
@@ -666,16 +663,19 @@ if __name__ == "__main__":
     )
 
     # ==================== STEP 6: TEST TRAINED MODEL ====================
-    # signle_prompt_test(
+    print("\n----------- test SFT-model single prompt -----------")
+    signle_prompt_test(trained_model, trained_tokenizer)
+    print("---------------------------------------\n")
+
+    # ==================== STEP 7: SFT EVALUATION ====================
+    # predictions_sft, references_sft = make_predictions(
     #     trained_model,
     #     trained_tokenizer,
-    #     test_prompt="battery- phone - apple - protect",
+    #     raw_data,
+    #     cache_filename="predictions_sft.json",
     # )
-
-    # ==================== STEP 7: EVALUATION ====================
-    # predictions, references = make_predictions(trained_model, trained_tokenizer, raw_data)
-    # bert_score(predictions, references)
-    # calculate_meteor(predictions, references)
+    # bert_score(predictions_sft, references_sft)
+    # calculate_meteor(predictions_sft, references_sft)
 
     # ==================== STEP 8: DPO ====================
     dpo_model, dpo_tokenizer = dpo_trainer(
@@ -683,3 +683,13 @@ if __name__ == "__main__":
     )
 
     # ==================== STEP 9: TEST DPO MODEL ====================
+    print("\n----------- test DPO-model single prompt -----------")
+    signle_prompt_test(dpo_model, dpo_tokenizer)
+    print("---------------------------------------\n")
+
+    # ==================== STEP 10: DPO EVALUATION ====================
+    # predictions_dpo, references_dpo = make_predictions(
+    #     dpo_model, dpo_tokenizer, raw_data, cache_filename="predictions_dpo.json"
+    # )
+    # bert_score(predictions_dpo, references_dpo)
+    # calculate_meteor(predictions_dpo, references_dpo)
